@@ -14,7 +14,10 @@ use crate::formatter::format_string;
 /// Generates a CSV extract for the given sheet and language
 pub fn sheet(excel: &Excel, language: Language, sheet_name: &str) -> Result<(), Box<dyn Error>> {
     // Set up the Input for parsing sestrings
-    let input = Input::new().with_global_parameter(1, String::from("Player Player")); // Player name
+    let input = Input::new()
+        .with_global_parameter(1, String::from("_FIRSTNAME_ _LASTNAME_")) 
+        .with_global_parameter(1, String::from("_FIRSTNAME_ _LASTNAME_"))
+        .with_global_parameter(1, String::from("_FIRSTNAME_ _LASTNAME_"));
 
     // Fetch the sheet data
     let sheet = excel.sheet(sheet_name)?;

@@ -3,12 +3,13 @@ use ironworks::Ironworks;
 use ironworks::sestring::format::Input;
 use ironworks::sestring::format::Player;
 use ironworks::sestring::format::Gender;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
 
 use ironworks::excel::{Excel, Field, Language};
-use ironworks::file::exh::{ColumnDefinition, SheetKind, ColumnKind};
+use ironworks::file::exh::{ColumnDefinition, SheetKind};
 
 use crate::exd_schema::field_names;
 use crate::formatter::format_string;
@@ -95,14 +96,14 @@ pub fn quest_sheet(excel: &Excel, language: Language, sheet_name: &str) -> Resul
 
     // Set up the output file
     let language_code = language_code(&language);
-    let path = format!("output/{}/{}.csv", language_code, sheet_name);
+    let path = format!("output/{}/{}_actor.csv", language_code, sheet_name);
     if let Some(parent) = Path::new(&path).parent() {
         fs::create_dir_all(parent)?;
     }
     let mut writer =
         Writer::from_path(&path).expect(format!("Failed to open output file: {}", &path).as_str());
     
-    let field_name = field_names(sheet_name)?.expect("ahcannot find fiednames");
+    let field_name = field_names(sheet_name)?.expect("canno find fieldnames for Quest");
     let quest_id_index = field_name
         .iter()
         .position(|name| name == "Id")
@@ -166,7 +167,9 @@ pub fn quest_sheet(excel: &Excel, language: Language, sheet_name: &str) -> Resul
 /// Generates a CSV extract for the given sheet and language
 pub fn quest_line_sheet(excel: &Excel, language: Language, sheet_name: &str) -> Result<(), Box<dyn Error>> {
     // Set up the Input for parsing sestrings
-    let input_female = Input::new()
+    let input_female_day = Input::new()
+        .with_global_parameter(4, 1u32)
+        .with_global_parameter(11, 9u32)
         .with_global_parameter(1, String::from("_FIRSTNAME_ _LASTNAME_"))
         .with_player(
             0,
@@ -177,7 +180,35 @@ pub fn quest_line_sheet(excel: &Excel, language: Language, sheet_name: &str) -> 
         
         )
         .with_local_player_id(0);
-    let input_male = Input::new()
+    let input_female_night = Input::new()
+        .with_global_parameter(4, 1u32)
+        .with_global_parameter(11, 2u32)
+        .with_global_parameter(1, String::from("_FIRSTNAME_ _LASTNAME_"))
+        .with_player(
+            0,
+            Player {
+                name: "_FIRSTNAME_ _LASTNAME_".into(),
+                gender: Gender::Female,
+            }
+        
+        )
+        .with_local_player_id(0);
+    let input_male_day = Input::new()
+        .with_global_parameter(4, 0u32)
+        .with_global_parameter(11, 9u32)
+        .with_global_parameter(1, String::from("_FIRSTNAME_ _LASTNAME_"))
+        .with_player(
+            0,
+            Player {
+                name: "_FIRSTNAME_ _LASTNAME_".into(),
+                gender: Gender::Male,
+            }
+        
+        )
+        .with_local_player_id(0);
+    let input_male_night = Input::new()
+        .with_global_parameter(4, 0u32)
+        .with_global_parameter(11, 2u32)
         .with_global_parameter(1, String::from("_FIRSTNAME_ _LASTNAME_"))
         .with_player(
             0,
@@ -206,6 +237,14 @@ pub fn quest_line_sheet(excel: &Excel, language: Language, sheet_name: &str) -> 
     let mut writer =
         Writer::from_path(&path).expect(format!("Failed to open output file: {}", &path).as_str());
 
+    let inputs = [
+        ("", &input_female_day),
+        ("_M_D", &input_male_day),
+        ("_F_N", &input_female_night),
+        ("_M_N", &input_male_night),
+    ];
+    let mut written_rows: HashSet<Vec<String>> = HashSet::new();
+
     // Write the field header
     match field_names(sheet_name)? {
         Some(names) => writer.serialize(&names)?,
@@ -214,54 +253,49 @@ pub fn quest_line_sheet(excel: &Excel, language: Language, sheet_name: &str) -> 
 
     // Write the file data
     for row in sheet.into_iter() {
-        let row = &row?;
-        let mut female_night: Vec<String> = Vec::new();
-        let mut male_night: Vec<String> = Vec::new();
-        let mut female_day: Vec<String> = Vec::new();
-        let mut male_day: Vec<String> = Vec::new();
-        
+        let row = row?;
         let id = match has_subrows {
             true => format!("{}.{}", row.row_id(), row.subrow_id()),
             false => row.row_id().to_string(),
         };
 
-        female_night.push(id);
+        let mut output_rows = [
+            vec![id.clone()],
+            vec![id.clone()],
+            vec![id.clone()],
+            vec![id],
+        ];
 
-        for column in columns.iter() {
+        for column in &columns {
             let specifier = ColumnDefinition {
                 kind: column.kind,
                 offset: column.offset,
             };
             let field = row.field(&specifier)?;
-            let female_line: String = field_to_string(&field, &input_female);
-            let male_line: String = field_to_string(&field, &input_male);
-            if column.offset == 4 && male_line != female_line {
-                male_night = female_night.to_vec();
-                male_night.push(male_line);
+            let values: Vec<String> = inputs
+                .iter()
+                .map(|(_, input)| field_to_string(&field, input))
+                .collect();
+
+            for (output, value) in output_rows.iter_mut().zip(values) {
+                output.push(value);
             }
-            female_night.push(female_line);
         }
 
-        match writer.serialize(female_night) {
-            Ok(_) => (),
-            Err(err) => {
-                return Err(format!(
-                    "{err}. For differing field counts, try adding Unknown columns to the schema.",
-                )
-                .into());
-            }
-        }
-        if ! male_night.is_empty() {
-            match writer.serialize(male_night) {
-                Ok(_) => (),
-                Err(err) => {
-                    return Err(format!(
-                        "{err}. For differing field counts, try adding Unknown columns to the schema.",
-                    )
-                    .into());
+        let mut seen_contents: HashSet<Vec<String>> = HashSet::new();
+
+        for (variant, mut output) in output_rows.into_iter().enumerate() {
+            let contents = output[1..].to_vec();
+
+            if seen_contents.insert(contents) {
+                output[0].push_str(inputs[variant].0);
+
+                if written_rows.insert(output.clone()) {
+                    writer.serialize(output)?;
                 }
             }
         }
+
     }
 
     writer
